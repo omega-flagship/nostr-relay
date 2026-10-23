@@ -1,10 +1,103 @@
 # nostr-relay
 
-The **shared, always-on Nostr relay** for the avatar mailbox fabric — fleet infra, **one
-per fleet**, run independently. Not a per-avatar tool: avatars are *clients* of this relay
-(via `nostr-mailbox`), they do not contain it. Design: [`design/nostr-mailbox.md`](https://gitlab.com/nunet/applications/tools/nostr-mailbox/-/blob/main/docs/design.md).
+## Origin
 
-It runs **gated-relay** (`relay/`), a small relay of our own, closed in both
+This repository is a **copy** of NuNet's
+[nunet/applications/tools/nostr-relay](https://gitlab.com/nunet/applications/tools/nostr-relay),
+taken on 2026-10-23 at commit
+[`4196232`](https://gitlab.com/nunet/applications/tools/nostr-relay/-/commit/4196232862d229659083e43e54ec17276e7b05ba)
+with its full history. The relay was written at NuNet for its agent fleet; the authors of
+record in the history are `kabir@nunet.io` and NuNet's GitLab service account.
+
+It is **not a mirror**: nothing syncs. Changes here are the SingularityNET Omega Flagship
+HitSquad's, made by pull request. Changes from upstream come in by `git fetch upstream` and
+a pull request, when wanted.
+
+What differs from upstream:
+
+- **The Omega deployment.** `.github/workflows/tag-merged-pr.yml` tags every merged pull
+  request `pr-<number>`; `.github/workflows/deploy.yml` deploys such a tag to
+  `omega-universe.singularitynet.dev` (section [Deploy](#deploy)).
+- **`config.toml`.** `[gate] relay_urls` lists `wss://omega-universe.singularitynet.dev`,
+  and `[info]` names this deployment.
+- **This README**: the Origin and Deploy sections; NuNet's fleet-tooling section, replaced
+  by "Identities and the allowlist"; small edits to the file table and to "Run by hand"; and
+  the word "agent" where upstream says "avatar" (NuNet's term for the same thing). The
+  scripts and `MAINTAINER.md` are unchanged from upstream and keep that word.
+
+The client that agents run against this relay is NuNet's
+[nostr-mailbox](https://gitlab.com/nunet/applications/tools/nostr-mailbox).
+
+## Deploy
+
+The relay runs on `omega-universe.singularitynet.dev` as `docker compose` project
+`nostr-relay`, started by the workflow **Deploy relay** (`.github/workflows/deploy.yml`) on
+the self-hosted runner `omega-universe`.
+
+**What can be deployed:** a merged pull request. When a pull request is merged into `main`,
+the workflow **Tag merged PR** (`.github/workflows/tag-merged-pr.yml`, on GitHub's runners)
+tags the merge commit `pr-<number>`. Those tags are the only refs the deploy accepts: no
+branch, no sha, so what runs on the server is always a merged change (reviewed, if `main`
+requires a review to merge), given the runner fence described under *What the workflow needs*,
+and the Deploy log reads as a list of pull requests. A `pr-*` tag is never moved or deleted (a
+tag ruleset on `pr-*` refuses both; the maintainer creates it during setup, outside this
+repository). To tag a pull request merged before the workflow
+existed, or the one that added it: Actions → Tag merged PR → Run workflow → `pr` = its number;
+the tag goes on its merge commit, only if it is merged into `main`. Residual: anyone with write
+access can create `pr-<number>` by hand at some older commit of `main` before the workflow does;
+the deploy then ships that commit of `main`, still a merged one, and the workflow's run fails
+loudly because the tag is not where it should be.
+
+**To deploy:** Actions → Deploy relay → Run workflow → `ref` = the tag, for example `pr-12`
+(no default). The workflow checks the repository out at that tag on the server, refuses
+anything that is not a `pr-<number>` tag whose commit is on `main`, runs the public compose
+command below with `--build --force-recreate`, waits up to two minutes for a 2xx from
+`https://omega-universe.singularitynet.dev/health`, and records the tag and commit.
+Every run, failed ones too, adds one comment to the pinned issue **Deploy log** (label
+`deploy-log`): date, tag and commit deployed, the tag it replaced, result, link to the run.
+
+**To roll back:** run the same workflow with `ref` = the previous tag, as the Deploy log shows
+it. There is no separate rollback workflow. Runs queue one deep: while one deploy runs and a
+second waits, a third dispatch cancels the waiting one, and the log records it as not finished.
+
+**What a deploy changes:** the config (`config.toml`, `Caddyfile`) comes from the checkout,
+so a config change is a pull request, then a deploy at the merged commit. The containers are
+recreated on every deploy (a few seconds without the relay); the relay's database and
+Caddy's certificates live in named volumes and survive it. A failed health check leaves the
+containers as they are and fails the run.
+
+**What the workflow needs:** the repository Actions variable `RELAY_DOMAIN`
+(`omega-universe.singularitynet.dev`); a runner with the label `omega-universe`, running as
+a user in the `docker` group, with ports 80 and 443 free for Caddy, and with `git` 2.18 or
+later, `gh`, `curl` and `docker compose` v2 installed (a self-hosted runner ships none of
+them; without `gh` no Deploy log comment is written, without a recent `git` the checkout is
+a tarball and the deployed commit cannot be recorded); permissions `contents: read`,
+`issues: write`. No secret. The last deployed tag and commit are kept in `~/relay/DEPLOYED`
+in the runner user's home. The tag workflow needs nothing on the server: it runs on GitHub's
+runners with `contents: write` (to push the tag) and `pull-requests: read`; it triggers on
+`pull_request_target` so that a merged pull request from a fork is tagged too (under
+`pull_request` a fork's run has a read-only token), and it checks out `main`, never the pull
+request's code. The container, network and volume names come from upstream's compose
+files (`nostr-relay`, `nostr-relay-caddy`, `nostr-mailbox-net`, `nostr-mailbox-relay-db`):
+a host already running NuNet's relay under those names would be taken over (same compose
+project name) or the deploy fails on the name clash (another project name); either way its
+database volume would be reused, so check the host before the first run.
+
+This workflow runs on dispatch only, by someone with write access to this repository, and
+never on a tag push (a pushed tag would run the workflow file from the tagged commit, not the
+one on `main`). It cannot keep other workflows off the runner: a pull request from a fork brings its own
+workflow files. That fence is part of the setup: register the runner in a runner group open
+to this repository only, limited to this workflow on `main` where GitHub's plan allows it,
+and require approval for workflows from fork pull requests (Settings → Actions → General).
+
+## What it is
+
+The **shared, always-on Nostr relay** for agent-to-agent mail: fleet infra, **one per
+fleet**, run independently. Not a per-agent tool: agents are *clients* of this relay (via
+`nostr-mailbox`), they do not contain it. Design:
+[`design/nostr-mailbox.md`](https://gitlab.com/nunet/applications/tools/nostr-mailbox/-/blob/main/docs/design.md).
+
+It runs **gated-relay** (`relay/`), a small relay of NuNet's own, closed in both
 directions:
 
 - **Sign-in first.** On connect the relay sends a NIP-42 challenge. Until the client
@@ -26,23 +119,29 @@ revoking a key needs no restart.
 
 | file | what |
 |---|---|
+| `.github/workflows/tag-merged-pr.yml` | tags each merged pull request `pr-<number>` (section [Deploy](#deploy)); not in upstream |
+| `.github/workflows/deploy.yml` | the Omega deployment of such a tag (section [Deploy](#deploy)); not in upstream |
 | `relay/` | gated-relay: `gated_relay.py`, its pinned `requirements.txt`, the `Dockerfile` |
 | `docker-compose.yml` | builds and runs it, creates the shared `nostr-mailbox-net` network + a persistent DB volume |
 | `docker-compose.public.yml`, `Caddyfile` | the public deployment: the same relay behind Caddy, TLS on `$RELAY_DOMAIN` |
 | `tests/gated-relay.sh` | the relay driven by a real client (`nak`), plus the real mailbox end to end |
-| `config.toml` | closed-relay config — a **pubkey allowlist** of the fleet's avatars (no open registration) |
-| `registry.example.json` | the **contacts/identity** map format (`name → {npub, pubkey_hex, did:key, dids[], display}`). Each avatar carries its own writable copy, generated from `pass` by `nostr-mailbox`'s `scripts/build-registry` — nothing is mounted from here |
-| `MAINTAINER.md` | operator runbook: mint a keypair per avatar → `pass`, publish public parts to `registry.json`, pin the pubkey in the allowlist |
+| `config.toml` | closed-relay config — a **pubkey allowlist** of the fleet's agents (no open registration) |
+| `registry.example.json` | the **contacts/identity** map format (`name → {npub, pubkey_hex, did:key, dids[], display}`). Each agent carries its own writable copy, generated from `pass` by `nostr-mailbox`'s `scripts/build-registry` — nothing is mounted from here |
+| `scripts/sync-allowlist` | write that allowlist from the keys in `pass` |
+| `scripts/provision` | first-time setup of relay + network, with `nostr-mailbox` checked out beside this repo |
+| `MAINTAINER.md` | NuNet's operator runbook: mint a keypair per agent → `pass`, publish public parts to `registry.json`, pin the pubkey in the allowlist |
 
 ## Why it is separate from `nostr-mailbox`
 
 Different lifecycle and cardinality: the relay is **one always-on service for the whole
 fleet** (the store-and-forward buffer that holds mail for offline recipients); the
-`nostr-mailbox` container is **one on-demand instance per avatar**. The mailbox connects to
+`nostr-mailbox` container is **one on-demand instance per agent**. The mailbox connects to
 `ws://nostr-relay:8080` on the shared network — a client/server boundary, not a
-containment one. Bundling them would tie fleet infra to an avatar's lifecycle.
+containment one. Bundling them would tie fleet infra to an agent's lifecycle.
 
-## Run (once, host-side; avatar-builder / operator)
+## Run by hand
+
+On a host without the workflow (a local fleet, or a test):
 
 ```sh
 docker compose up -d --build
@@ -57,57 +156,28 @@ RELAY_DOMAIN=relay.example.org docker compose \
 
 Ports 80 and 443 must reach the host, because Caddy uses 80 for the certificate
 challenge. A DDNS hostname works. Add `wss://<RELAY_DOMAIN>` to `[gate]
-relay_urls` in `config.toml`, or every sign-in is refused. Avatars then set
+relay_urls` in `config.toml`, or every sign-in is refused. Agents then set
 `NOSTR_MAILBOX_RELAY=wss://<RELAY_DOMAIN>`. The mailbox signs in with `--auth` on
-every call, using the avatar's own key.
+every call, using the agent's own key.
 
 Creates the always-on relay + the shared external network `nostr-mailbox-net` that every
-avatar's `nostr-mailbox` joins. Fill `config.toml`'s `pubkey_whitelist` from the minted
+agent's `nostr-mailbox` joins. Fill `config.toml`'s `pubkey_whitelist` from the minted
 keys per `MAINTAINER.md` — that allowlist is this relay's access control. The address book
-(`registry.json`) is not deployed from here; each avatar carries its own copy.
+(`registry.json`) is not deployed from here; each agent carries its own copy.
 
-## Fleet identities — mint, rotate, publish
+## Identities and the allowlist
 
-`scripts/mint-avatar-keys` (in `nostr-mailbox`) and `scripts/sync-allowlist` each
-take a list of avatars, so those two steps were never the hard part. The part that
-goes wrong by hand is the **fan-out**: every avatar carries its **own copy** of the
-address book, so changing one identity means rewriting `registry.json` in every
-other avatar's directory and restarting every mailbox. Miss one and the failure is
-silent — that avatar cannot verify or address the changed one, with no error until
-someone sends mail.
-
-That fan-out is **not this component's job**: it needs to know which avatars exist
-and where they live, and that is harness-core's, which owns `avatars.conf`. Run it
-from there:
-
-```sh
-cd <your-path>/applications/agent-sources/harness-core
-./fleet mailbox          # menu: every avatar's state, and act on it
-```
-
-It reaches back into this repo for `scripts/sync-allowlist` and `config.toml`, which
-is the right direction: harness-core knows the fleet, a component knows its own
-files. This repo never needs to know where an avatar is.
-
-## What stays here
-
-| | |
-|---|---|
-| `config.toml` | the relay's config, including the `pubkey_whitelist` it enforces |
-| `docker-compose.yml` | the relay itself and the shared `nostr-mailbox-net` |
-| `scripts/sync-allowlist` | write that whitelist from the keys in `pass` |
-| `scripts/provision` | first-time setup of relay + network |
-| `MAINTAINER.md` | the runbook for minting and publishing identities |
+`scripts/mint-avatar-keys` (in `nostr-mailbox`) and `scripts/sync-allowlist` each take a
+list of agents and write the keys to `pass` and the allowlist from `pass`. Upstream drives
+them from NuNet's fleet tooling (`./fleet mailbox` in harness-core), which knows every agent
+of that fleet and fans the address book out to each one; that tooling is not part of this
+copy. Here the allowlist is the `pubkey_whitelist` in `config.toml`, changed by pull request
+and applied by a deploy. The keys in it are public keys.
 
 **`rotate` always publishes, and cannot be dry-run.** Minting without publishing
 leaves the fleet broken: `mint-avatar-keys` overwrites all four `pass` entries, and
 a mailbox asserts at start that the key it was given matches its registry entry. So
-an avatar that is minted but not re-published will not start.
+an agent that is minted but not re-published will not start.
 
 **Nothing is restarted for you.** The relay restart briefly stops buffering for the
-whole fleet, and each mailbox belongs to an avatar that may be mid-conversation.
-The exact commands are printed at the end of a publish.
-
-An avatar with no key in `pass` is left out of the address book and reported —
-listing it would only invite a message that cannot be sent. An avatar with no
-`tools/nostr-mailbox/` is skipped the same way.
+whole fleet, and each mailbox belongs to an agent that may be mid-conversation.
